@@ -2,31 +2,59 @@ name: Kakao candidates 15:21 KST
 
 on:
   schedule:
-    # GitHub Actions는 UTC 기준 → 15:21 KST = 06:21 UTC (월~금)
-    - cron: "21 6 * * 1-5"
-  workflow_dispatch: {}   # 수동 실행 버튼
+    - cron: "21 6 * * 1-5"   # 평일 15:21 KST (UTC+9 기준, UTC 06:21)
+  workflow_dispatch: {}       # 수동 실행 버튼 유지
+
+# GitHub Actions가 리포지토리에 커밋/푸시할 수 있도록 권한 부여
+permissions:
+  contents: write
+
+concurrency:
+  group: kakao-candidates
+  cancel-in-progress: false
 
 jobs:
   send:
     runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Seoul  # 로그/작성 시간대 일치
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install requests python-dotenv pandas
 
-      - name: Run script
+      # history 폴더를 미리 만들어 둡니다 (alerts.py에서 기록 파일을 쓸 때 대비)
+      - name: Ensure history folder
+        run: mkdir -p history
+
+      - name: Run alert script (send Kakao message)
         env:
           KAKAO_REST_KEY: ${{ secrets.KAKAO_REST_KEY }}
           KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
           SHEET_CSV_URL: ${{ secrets.SHEET_CSV_URL }}
         run: |
           python alerts.py
+
+      # alerts.py가 history/*.csv 같은 파일을 썼다면 자동 커밋/푸시합니다
+      - name: Commit history if changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "chore(history): add picks for $(date +'%Y-%m-%d %H:%M:%S %Z')"
+            git push
+          else
+            echo "No changes to commit."
+          fi
