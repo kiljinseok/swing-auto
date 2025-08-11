@@ -17,8 +17,7 @@ def send_to_me(access_token: str, text: str):
     url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
     headers = {
         "Authorization": f"Bearer {access_token}",
-        # ✅ UTF-8 명시 (중요)
-        "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+        "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",  # UTF-8 명시
     }
     tpl = {
         "object_type": "text",
@@ -29,9 +28,7 @@ def send_to_me(access_token: str, text: str):
         },
         "button_title": "열기",
     }
-    # ✅ ensure_ascii=False (중요)
     data = {"template_object": json.dumps(tpl, ensure_ascii=False)}
-
     r = requests.post(url, headers=headers, data=data, timeout=10)
     r.raise_for_status()
 
@@ -54,21 +51,33 @@ def format_message(df: pd.DataFrame) -> str:
     lines.append("※ 종가는 장마감가로 확정, 슬리피지 가능. 손절/목표는 마감 후 재확인 권장.")
     return "\n".join(lines)
 
-def main():
-    at = refresh_access_token()
-
-    # ✅ CSV 인코딩 보정
-    resp = requests.get(CSV, timeout=10)
-    # 우선 utf-8로 시도, 필요하면 아래 라인 주석 해제해서 cp949로 테스트
-    resp.encoding = "utf-8"  # or "utf-8-sig"
+def read_candidates_csv(csv_url: str) -> pd.DataFrame:
+    # CSV 가져오기 + 인코딩 보정(UTF-8 우선, 실패 시 cp949 시도)
+    resp = requests.get(csv_url, timeout=10)
+    resp.raise_for_status()
+    resp.encoding = "utf-8"  # 서버 힌트
     csv_text = resp.text
-
-    # BOM 가능성 대비 utf-8-sig 먼저 시도
     try:
         df = pd.read_csv(io.StringIO(csv_text), encoding="utf-8-sig")
     except Exception:
-        # 드물게 cp949인 경우가 있어 예외 시 백업 전략
         df = pd.read_csv(io.StringIO(csv_text), encoding="cp949")
+    # 공백/결측 제거(이름이 없는 행 제거)
+    if "name" in df.columns:
+        df = df[df["name"].astype(str).str.strip() != ""]
+    return df
+
+def main():
+    at = refresh_access_token()
+    try:
+        df = read_candidates_csv(CSV)
+    except Exception:
+        # 시트 접근 실패 시에도 안내 메시지 전송
+        send_to_me(at, "오늘은 추천 종목이 없습니다. (CSV 접근 실패)")
+        return
+
+    if df is None or df.empty:
+        send_to_me(at, "오늘은 추천 종목이 없습니다.")
+        return
 
     msg = format_message(df)
     send_to_me(at, msg)
