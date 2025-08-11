@@ -1,0 +1,27 @@
+name: send_kakao_alerts
+
+on:
+  schedule:
+    - cron: "21 6 * * 1-5"  # 한국 시간 15:21 (UTC는 6시간 차이)
+  workflow_dispatch:       # 수동 실행도 가능
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run candidates sender
+        env:
+          KAKAO_REFRESH_TOKEN: ${{ secrets.KAKAO_REFRESH_TOKEN }}
+          GOOGLE_CSV_URL: ${{ secrets.GOOGLE_CSV_URL }}
+        run: python candidates_sender.py
