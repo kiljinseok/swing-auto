@@ -1,5 +1,9 @@
 import os, io, re, json, time, requests, pandas as pd
-from typing import Dict, Optional
+from typing import Dict
+from datetime import datetime, timedelta, timezone
+
+# === KST 시간대 (✅ 기록 파일명에 한국시간 사용)
+KST = timezone(timedelta(hours=9))
 
 # === Secrets ===
 REST  = os.environ["KAKAO_REST_KEY"]
@@ -37,41 +41,30 @@ def _clean(s: str) -> str:
     return re.sub(r"\s+", "", str(s or "")).strip()
 
 def _score_to_num(score) -> float:
-    # '★★★★★', '★★★★☆' → 별 개수로 점수화 (없으면 0)
     if not isinstance(score, str): return 0.0
-    stars = score.count("★") + 0.5*score.count("☆")  # ☆ 반점 처리
+    stars = score.count("★") + 0.5*score.count("☆")
     return float(stars)
 
 # ---------- Market-cap rank from Naver ----------
 def fetch_kospi_ranks(limit_pages: int = 10) -> pd.DataFrame:
-    """
-    네이버금융 KOSPI 시가총액 페이지에서 종목명/코드/시총순위를 수집
-    - page=1..limit_pages (일반적으로 1~10이면 200위까지 커버)
-    """
     rows = []
     base = "https://finance.naver.com/sise/sise_market_sum.naver?sosok=0&page={page}"
-    # 중요: EUC-KR
     for p in range(1, limit_pages + 1):
         url = base.format(page=p)
         resp = requests.get(url, timeout=15)
         resp.encoding = "euc-kr"
         html = resp.text
-        # 아주 간단한 파서: 표 행에서 종목코드/이름 추출
-        # 코드 a href="/item/main.naver?code=005930"
         for m in re.finditer(r'/item/main\.naver\?code=(\d{6})".*?>([^<]+)</a>', html, flags=re.S):
             code = m.group(1)
             name = m.group(2).strip()
             rows.append({"code": code, "name": name})
-        time.sleep(0.2)  # 예의상 살짝 대기
+        time.sleep(0.2)
     if not rows:
         return pd.DataFrame(columns=["rank", "code", "name"])
 
-    # 각 페이지가 대략 시총 순으로 나열 → 등장 순서로 순위 부여 (중복 제거)
     df = pd.DataFrame(rows).drop_duplicates(subset=["code"]).reset_index(drop=True)
-    df.insert(0, "rank", df.index + 1)  # 1부터
-    # 상위 200만 남김
+    df.insert(0, "rank", df.index + 1)
     df = df[df["rank"] <= 200].copy()
-    # 정규화 컬럼(공백 제거)
     df["name_key"] = df["name"].map(_clean)
     return df[["rank", "code", "name", "name_key"]]
 
@@ -85,22 +78,18 @@ def read_candidates_csv(csv_url: str) -> pd.DataFrame:
         df = pd.read_csv(io.StringIO(raw), encoding="utf-8-sig")
     except Exception:
         df = pd.read_csv(io.StringIO(raw), encoding="cp949")
-    # 필수 컬럼 보정
+
     for col in ["name", "price", "stop", "target", "score", "reason"]:
         if col not in df.columns:
             df[col] = None
-    # 정규화 키
+
     df["name_key"] = df["name"].astype(str).map(_clean)
-    # 점수 수치화(정렬용)
     df["score_num"] = df["score"].map(_score_to_num)
     return df
 
 def filter_top3_kospi200(cands: pd.DataFrame, kospi200: pd.DataFrame) -> pd.DataFrame:
-    # 이름 기준 매칭 (필요하면 나중에 ticker 컬럼도 지원)
     merged = cands.merge(kospi200[["rank", "name_key"]], on="name_key", how="inner")
-    # 우선 순위: score_num 내림차순 → rank 오름차순
     merged = merged.sort_values(by=["score_num", "rank"], ascending=[False, True])
-    # 최대 3개
     return merged.head(3).copy()
 
 # ---------- Message ----------
@@ -127,6 +116,21 @@ def format_message(df: pd.DataFrame) -> str:
     lines.append("※ 종가는 장마감가로 확정, 슬리피지 가능. 손절/목표는 마감 후 재확인 권장.")
     return "\n".join(lines)
 
+# ---------- History (✅ 추가) ----------
+def save_history(df: pd.DataFrame):
+    """
+    추천 종목이 있을 때만 history/YYYY-MM-DD.csv 로 저장 (KST 날짜 기준)
+    """
+    if df is None or df.empty:
+        return
+    # 기록 폴더 생성
+    os.makedirs("history", exist_ok=True)
+    d = datetime.now(KST).strftime("%Y-%m-%d")
+    path = os.path.join("history", f"{d}.csv")
+    cols = ["name","price","stop","target","score","reason","rank"]
+    # 누적 기록이 필요하면 mode="a", header=not os.path.exists(path) 로 변경 가능
+    df[cols].to_csv(path, index=False, encoding="utf-8-sig")
+
 # ---------- Main ----------
 def main():
     at = refresh_access_token()
@@ -137,13 +141,17 @@ def main():
         return
 
     try:
-        ranks = fetch_kospi_ranks(limit_pages=10)  # 1~10페이지 ≈ Top200
+        ranks = fetch_kospi_ranks(limit_pages=10)  # ≈ Top200
     except Exception:
-        # 순위 페이지 이슈 시, 안전하게 '추천 없음'
         send_to_me(at, "오늘은 추천 종목이 없습니다. (시총 순위 조회 실패)")
         return
 
     top3 = filter_top3_kospi200(cands, ranks)
+
+    # ✅ 추천 내역 저장
+    save_history(top3)
+
+    # 카톡 발송
     msg = format_message(top3 if top3 is not None else pd.DataFrame())
     send_to_me(at, msg)
 
