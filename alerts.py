@@ -157,4 +157,10 @@ def main():
 
 if __name__ == "__main__":
     main()
+# alerts.py 안에서 추천 결과 문자열이 msg 라고 가정
+from datetime import datetime
+import os
+os.makedirs("history", exist_ok=True)
+with open(f"history/{datetime.now().strftime('%Y-%m-%d')}_picks.txt", "w", encoding="utf-8") as f:
+    f.write(msg)
 
